@@ -767,22 +767,3 @@ function MetricBlock({
     </div>
   );
 }
-
-async function postSharedHistory(entry: MissionHistoryItem) {
-  await fetch("/api/history", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(entry),
-  });
-}
-
-async function getSharedHistory(): Promise<MissionHistoryItem[]> {
-  try {
-    const response = await fetch("/api/history", { cache: "no-store" });
-    if (!response.ok) return [];
-    const payload = (await response.json()) as { data?: MissionHistoryItem[] };
-    return payload.data ?? [];
-  } catch {
-    return [];
-  }
-}
