@@ -75,3 +75,10 @@ export interface PlannerResult {
   plan: PlannerResponse;
   audit: AuditResult;
 }
+
+export interface MissionHistoryItem {
+  codename: string;
+  location: string;
+  coverage: number;
+  timestamp: number;
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   Card,
   CardContent,
@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { generatePlanAction } from "@/app/actions/generate-plan";
 import type {
   MissionFormState,
+  MissionHistoryItem,
   PlannerResult,
   PriorityPillar,
 } from "@/lib/types";
@@ -40,6 +41,18 @@ const hazardProfiles = [
   "Public health outbreak",
 ];
 
+const HISTORY_KEY = "reliefcanvas.history.v1";
+
+const readLocalHistory = (): MissionHistoryItem[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_KEY);
+    return raw ? (JSON.parse(raw) as MissionHistoryItem[]) : [];
+  } catch {
+    return [];
+  }
+};
+
 const initialForm: MissionFormState = {
   codename: "Aurelia Coast",
   location: "Bicol, Philippines",
@@ -60,9 +73,17 @@ const initialForm: MissionFormState = {
 export function MissionPlanner() {
   const [formState, setFormState] = useState<MissionFormState>(initialForm);
   const [result, setResult] = useState<PlannerResult | null>(null);
+  const [history, setHistory] = useState<MissionHistoryItem[]>(readLocalHistory);
+  const [sharedHistory, setSharedHistory] = useState<MissionHistoryItem[]>([]);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
+
+  useEffect(() => {
+    getSharedHistory()
+      .then((data) => setSharedHistory(data))
+      .catch(() => {});
+  }, []);
 
   const handleToggle = (pillar: PriorityPillar) => {
     setFormState((prev) => {
@@ -79,10 +100,15 @@ export function MissionPlanner() {
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
+    const missionSnapshot = {
+      codename: formState.codename,
+      location: formState.location,
+    };
     startTransition(async () => {
       try {
         const next = await generatePlanAction(formState);
         setResult(next);
+        await persistHistory(next, missionSnapshot);
       } catch (err) {
         setError(
           err instanceof Error
@@ -91,6 +117,35 @@ export function MissionPlanner() {
         );
       }
     });
+  };
+
+  const persistHistory = async (
+    next: PlannerResult,
+    missionSnapshot: { codename: string; location: string },
+  ) => {
+    if (typeof window === "undefined") return;
+    const entry: MissionHistoryItem = {
+      codename: missionSnapshot.codename || "Untitled",
+      location: missionSnapshot.location || "Unknown AO",
+      coverage: next.audit.coverage,
+      timestamp: Date.now(),
+    };
+    setHistory((prev) => {
+      const filtered = prev.filter(
+        (item) => item.codename !== entry.codename || item.location !== entry.location,
+      );
+      const updated = [entry, ...filtered].slice(0, 4);
+      window.localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      return updated;
+    });
+
+    try {
+      await postSharedHistory(entry);
+      const remoteHistory = await getSharedHistory();
+      setSharedHistory(remoteHistory);
+    } catch {
+      // API failures should not break the flow
+    }
   };
 
   const coverageByCategory = useMemo(() => {
@@ -375,6 +430,33 @@ export function MissionPlanner() {
                 >
                   {isPending ? "Synthesizing..." : "Generate mission stack"}
                 </Button>
+
+                {history.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                      Recent synths
+                    </p>
+                    <ul className="mt-3 space-y-2 text-sm">
+                      {history.map((entry) => (
+                        <li
+                          key={`${entry.codename}-${entry.timestamp}`}
+                          className="flex items-center justify-between text-slate-200"
+                        >
+                          <span>
+                            {entry.codename}
+                            <span className="text-slate-400">
+                              {" "}
+                              · {entry.location}
+                            </span>
+                          </span>
+                          <span className="text-xs text-emerald-300">
+                            {entry.coverage}% audit
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </form>
             </CardContent>
           </Card>
@@ -609,6 +691,38 @@ export function MissionPlanner() {
                 </CardContent>
               </Card>
             </div>
+
+            {sharedHistory.length > 0 && (
+              <Card className="border-white/10 bg-black/30">
+                <CardHeader>
+                  <CardTitle>Mission Feed</CardTitle>
+                  <CardDescription>
+                    Snapshot of the last missions synced through the shared API
+                    endpoint.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  {sharedHistory.map((entry) => (
+                    <div
+                      key={`${entry.codename}-${entry.timestamp}`}
+                      className="flex items-center justify-between rounded-lg border border-white/5 bg-white/5 px-3 py-2"
+                    >
+                      <div>
+                        <p className="font-medium text-white">
+                          {entry.codename}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          {entry.location}
+                        </p>
+                      </div>
+                      <div className="text-right text-xs text-emerald-200">
+                        {entry.coverage}% audit
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </div>
@@ -616,6 +730,24 @@ export function MissionPlanner() {
   );
 }
 
+async function postSharedHistory(entry: MissionHistoryItem) {
+  await fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+}
+
+async function getSharedHistory(): Promise<MissionHistoryItem[]> {
+  try {
+    const response = await fetch("/api/history", { cache: "no-store" });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { data?: MissionHistoryItem[] };
+    return payload.data ?? [];
+  } catch {
+    return [];
+  }
+}
 function MetricBlock({
   label,
   value,
@@ -634,4 +766,23 @@ function MetricBlock({
       <p className="text-xs text-slate-400">{subtitle}</p>
     </div>
   );
+}
+
+async function postSharedHistory(entry: MissionHistoryItem) {
+  await fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+}
+
+async function getSharedHistory(): Promise<MissionHistoryItem[]> {
+  try {
+    const response = await fetch("/api/history", { cache: "no-store" });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { data?: MissionHistoryItem[] };
+    return payload.data ?? [];
+  } catch {
+    return [];
+  }
 }
