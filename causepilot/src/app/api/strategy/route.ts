@@ -50,14 +50,22 @@ export async function POST(request: Request) {
       throw new Error("Model returned empty content");
     }
 
+    const rawContent = content as unknown;
     const text =
-      typeof content === "string"
-        ? content
-        : Array.isArray(content)
-          ? content
+      typeof rawContent === "string"
+        ? rawContent
+        : Array.isArray(rawContent)
+          ? rawContent
               .map((chunk) => {
                 if (typeof chunk === "string") return chunk;
-                if ("text" in chunk && chunk.text) return chunk.text;
+                if (
+                  typeof chunk === "object" &&
+                  chunk !== null &&
+                  "text" in chunk &&
+                  typeof chunk.text === "string"
+                ) {
+                  return chunk.text;
+                }
                 return "";
               })
               .join("\n")
